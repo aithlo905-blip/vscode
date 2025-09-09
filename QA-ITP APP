@@ -1,0 +1,264 @@
+import React, { useEffect, useRef, useState } from "react";
+import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
+
+/**
+ * QA/ITP Mobile Web App (Simplified MVP)
+ * - Collects QA/ITP daily report fields
+ * - Add photos/videos/docs
+ * - Add extra custom parameters
+ * - Capture signature
+ * - Export or share as PDF
+ */
+
+const uid = () => Math.random().toString(36).slice(2, 10);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+const emptyForm = {
+  formId: uid(),
+  date: todayISO(),
+  customerName: "",
+  projectName: "",
+  projectAddress: "",
+  contactEmail: "",
+  workDescription: "",
+  inspectionsDescription: "",
+  attachments: [],
+  media: [],
+  signatureDataUrl: "",
+  reportedBy: "",
+  reportedByTitle: "",
+  reportedByDate: todayISO(),
+};
+
+export default function App() {
+  const [form, setForm] = useState(emptyForm);
+  const [message, setMessage] = useState("");
+  const sigCanvasRef = useRef(null);
+  const sigDrawing = useRef(false);
+
+  // --- Signature pad setup ---
+  useEffect(() => {
+    const canvas = sigCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "black";
+
+    const getPos = (e) => {
+      const r = canvas.getBoundingClientRect();
+      const t = e.touches?.[0];
+      return {
+        x: (t ? t.clientX : e.clientX) - r.left,
+        y: (t ? t.clientY : e.clientY) - r.top,
+      };
+    };
+
+    const start = (e) => {
+      sigDrawing.current = true;
+      const { x, y } = getPos(e);
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+    };
+    const move = (e) => {
+      if (!sigDrawing.current) return;
+      const { x, y } = getPos(e);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+    };
+    const end = () => (sigDrawing.current = false);
+
+    canvas.addEventListener("mousedown", start);
+    canvas.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    canvas.addEventListener("touchstart", start);
+    canvas.addEventListener("touchmove", move);
+    window.addEventListener("touchend", end);
+
+    return () => {
+      canvas.removeEventListener("mousedown", start);
+      canvas.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", end);
+      canvas.removeEventListener("touchstart", start);
+      canvas.removeEventListener("touchmove", move);
+      window.removeEventListener("touchend", end);
+    };
+  }, []);
+
+  const saveSignature = () => {
+    const c = sigCanvasRef.current;
+    const dataUrl = c.toDataURL("image/png");
+    setForm({ ...form, signatureDataUrl: dataUrl });
+    msg("Signature saved");
+  };
+  const clearSignature = () => {
+    const c = sigCanvasRef.current;
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0, 0, c.width, c.height);
+    setForm({ ...form, signatureDataUrl: "" });
+  };
+
+  // --- Helpers ---
+  const msg = (t) => {
+    setMessage(t);
+    setTimeout(() => setMessage(""), 2000);
+  };
+  const update = (patch) => setForm((f) => ({ ...f, ...patch }));
+
+  const readFiles = async (fileList) => {
+    const files = Array.from(fileList || []);
+    return Promise.all(
+      files.map(
+        (file) =>
+          new Promise((res, rej) => {
+            const reader = new FileReader();
+            reader.onload = () =>
+              res({
+                id: uid(),
+                name: file.name,
+                type: file.type,
+                dataUrl: reader.result,
+              });
+            reader.onerror = rej;
+            reader.readAsDataURL(file);
+          })
+      )
+    );
+  };
+
+  const addMedia = async (fl) =>
+    update({ media: [...form.media, ...(await readFiles(fl))] });
+  const addAttachments = async (fl) =>
+    update({ attachments: [...form.attachments, ...(await readFiles(fl))] });
+
+  const removeFrom = (key, id) =>
+    update({ [key]: form[key].filter((x) => x.id !== id) });
+
+  // --- PDF Export ---
+  const exportPDF = async () => {
+    try {
+      const input = document.getElementById("report");
+      const canvas = await html2canvas(input, { scale: 2 });
+      const imgData = canvas.toDataURL("image/png");
+      const pdf = new jsPDF({ orientation: "p", unit: "pt", format: "a4" });
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const imgHeight = (canvas.height * pageWidth) / canvas.width;
+      pdf.addImage(imgData, "PNG", 0, 0, pageWidth, imgHeight);
+      pdf.save(`QA-ITP_${form.projectName || "project"}_${form.date}.pdf`);
+      msg("PDF exported");
+    } catch (e) {
+      console.error(e);
+      msg("Failed to export PDF");
+    }
+  };
+
+  return (
+    <div className="p-4 max-w-3xl mx-auto">
+      <h1 className="text-2xl font-bold mb-4">QA / ITP Daily Report</h1>
+      {message && <div className="mb-2 text-green-700">{message}</div>}
+
+      <div id="report" className="bg-white shadow p-4 rounded-lg">
+        <input
+          className="border p-2 w-full mb-2"
+          placeholder="Customer Name"
+          value={form.customerName}
+          onChange={(e) => update({ customerName: e.target.value })}
+        />
+        <input
+          className="border p-2 w-full mb-2"
+          placeholder="Project Name"
+          value={form.projectName}
+          onChange={(e) => update({ projectName: e.target.value })}
+        />
+        <textarea
+          className="border p-2 w-full mb-2"
+          rows={4}
+          placeholder="Work Description"
+          value={form.workDescription}
+          onChange={(e) => update({ workDescription: e.target.value })}
+        />
+        <textarea
+          className="border p-2 w-full mb-2"
+          rows={4}
+          placeholder="Inspection / Testing"
+          value={form.inspectionsDescription}
+          onChange={(e) => update({ inspectionsDescription: e.target.value })}
+        />
+
+        {/* Media */}
+        <label className="block mb-2">
+          Add Photos/Videos
+          <input
+            type="file"
+            accept="image/*,video/*"
+            multiple
+            onChange={(e) => addMedia(e.target.files)}
+          />
+        </label>
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          {form.media.map((m) => (
+            <div key={m.id} className="relative border">
+              {m.type.startsWith("video") ? (
+                <video src={m.dataUrl} controls className="w-full h-24" />
+              ) : (
+                <img src={m.dataUrl} alt={m.name} className="w-full h-24" />
+              )}
+              <button
+                onClick={() => removeFrom("media", m.id)}
+                className="absolute top-0 right-0 bg-white text-xs"
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+
+        {/* Attachments */}
+        <label className="block mb-2">
+          Add Reference Docs
+          <input
+            type="file"
+            multiple
+            onChange={(e) => addAttachments(e.target.files)}
+          />
+        </label>
+        <ul className="mb-4">
+          {form.attachments.map((a) => (
+            <li key={a.id}>
+              {a.name}
+              <button
+                onClick={() => removeFrom("attachments", a.id)}
+                className="ml-2 text-red-600"
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        {/* Signature */}
+        <h2 className="font-semibold">Signature</h2>
+        <canvas
+          ref={sigCanvasRef}
+          width={600}
+          height={150}
+          className="border w-full mb-2"
+        />
+        <button onClick={saveSignature} className="mr-2 p-2 bg-blue-500 text-white">
+          Save Signature
+        </button>
+        <button onClick={clearSignature} className="p-2 bg-gray-200">
+          Clear
+        </button>
+      </div>
+
+      <button
+        onClick={exportPDF}
+        className="mt-4 p-2 bg-green-600 text-white rounded"
+      >
+        Export PDF
+      </button>
+    </div>
+  );
+}
